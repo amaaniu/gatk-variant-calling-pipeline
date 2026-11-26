@@ -14,8 +14,8 @@ description of what the pipeline is supposed to do.
 
 Built to cover a gap that shows up constantly in bioinformatics job
 specs: NGS variant calling with the GATK toolchain. It sits alongside
-two other projects — a [ChIP-seq peak-calling pipeline](https://github.com/[your-username]/chipseq-peak-calling)
-and my [MSc dissertation](https://github.com/[your-username]/[dissertation-repo])
+two other projects — a [ChIP-seq peak-calling pipeline](https://github.com/amaaniu/chipseq-peak-calling-pipeline)
+and my [MSc dissertation](https://github.com/amaaniu/BIO702P-Research-Project)
 on long-read scRNA-seq — as the third leg: NGS/short-read variant
 calling, ChIP-seq/epigenomics, and single-cell long-read, covering the
 main data types that come up in cancer genomics and computational
@@ -141,8 +141,8 @@ reproduce that.
 ## Running it
 
 ```bash
-git clone https://github.com/[your-username]/gatk-variant-calling.git
-cd gatk-variant-calling
+git clone https://github.com/amaaniu/gatk-variant-calling-pipeline.git
+cd gatk-variant-calling-pipeline
 
 conda env create -f workflow/envs/environment.yml
 conda activate variant-calling-pipeline
