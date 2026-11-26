@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Variant calling results</h1>
+
+<div class="card">
+    <div class="stat"><strong>{{ summary.total }}</strong>total variants</div>
+    <div class="stat"><strong>{{ summary.passed }}</strong>PASS</div>
+    <div class="stat"><strong>{{ summary.snps }}</strong>SNPs</div>
+    <div class="stat"><strong>{{ summary.indels }}</strong>indels</div>
+</div>
+
+<a class="btn" href="{{ url_for('download', job_id=job_id) }}">Download filtered VCF</a>
+
+<h3>PASS variants{% if summary.truncated %} (first 50 shown){% endif %}</h3>
+<table>
+    <thead>
+        <tr><th>Chrom</th><th>Pos</th><th>Ref</th><th>Alt</th><th>Qual</th><th>Type</th></tr>
+    </thead>
+    <tbody>
+        {% for row in summary.rows %}
+        <tr>
+            <td>{{ row.chrom }}</td><td>{{ row.pos }}</td><td>{{ row.ref }}</td>
+            <td>{{ row.alt }}</td><td>{{ row.qual }}</td><td>{{ row.type }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+
+<p><a href="{{ url_for('index') }}">&larr; Call another BAM</a></p>
+{% endblock %}

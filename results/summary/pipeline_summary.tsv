@@ -1,0 +1,2 @@
+sample	total_reads	mapped_reads	mapping_rate_pct	snps_pass	snps_filtered_out	indels_pass	indels_filtered_out
+NA_tiny	4602	4601	99.98	31	6	0	0

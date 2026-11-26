@@ -1,0 +1,28 @@
+# ============================================================
+# GATK germline variant-calling pipeline — configuration
+# ============================================================
+samples: "config/samples.tsv"
+
+reference:
+  fasta: "data/reference/reference.fasta"
+  dict: "data/reference/reference.dict"
+  known_indels: "data/reference/known_sites_indels.vcf.gz"
+  known_dbsnp: "data/reference/known_sites_dbsnp.vcf.gz"
+
+raw_dir: "data/raw"
+results_dir: "results"
+log_dir: "logs"
+
+threads:
+  bwa: 4
+  gatk: 2
+
+# Hard-filter thresholds (GATK germline best-practices defaults for a
+# single sample with no VQSR truth set — VQSR needs many more variants
+# than this small demo region has).
+filters:
+  snp_qd: 2.0
+  snp_fs: 60.0
+  snp_mq: 40.0
+  indel_qd: 2.0
+  indel_fs: 200.0

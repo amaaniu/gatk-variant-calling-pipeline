@@ -1,0 +1,16 @@
+name: variant-calling-pipeline
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - snakemake=9.*
+  - bwa=0.7.*
+  - samtools=1.19.*
+  - bcftools=1.19.*
+  - fastp=0.23.*
+  - gatk4=4.5.*
+  - pandas
+  - flask>=3.0
+  - multiqc

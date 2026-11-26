@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>BAM → VCF variant caller</h1>
+<p>
+    Upload a coordinate-sorted, aligned BAM file and this will run
+    <a href="https://gatk.broadinstitute.org/hc/en-us/articles/360037225632-HaplotypeCaller">GATK4 HaplotypeCaller</a>
+    against the bundled small reference genome, hard-filter the resulting variants, and return
+    a downloadable VCF plus a summary of what was found.
+</p>
+<div class="card">
+    <form action="{{ url_for('call') }}" method="post" enctype="multipart/form-data">
+        <label for="bam_file"><strong>BAM file</strong> (must be aligned against the bundled reference — see the project README)</label><br>
+        <input type="file" name="bam_file" id="bam_file" accept=".bam" required>
+        <br>
+        <button type="submit">Call variants</button>
+    </form>
+</div>
+<p style="font-size: 0.9rem; color: #555;">
+    No BAM handy? The pipeline's own output is a good test file:
+    <code>results/align/NA_tiny.recal.bam</code> from the Snakemake run in the parent directory.
+</p>
+{% endblock %}

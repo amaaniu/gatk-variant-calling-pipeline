@@ -1,0 +1,332 @@
+"""
+GATK4 germline short-variant calling pipeline (single sample, multi-lane)
+--------------------------------------------------------------------------
+Per-lane FASTQ -> fastp -> BWA-MEM (per-lane read groups) -> merge lanes
+     -> MarkDuplicates -> BaseRecalibrator/ApplyBQSR -> HaplotypeCaller
+     -> hard-filter SNPs and indels separately -> merged filtered VCF
+     -> bcftools stats -> MultiQC report
+
+Run with:  snakemake -s workflow/Snakefile --cores 4 -p
+Dry run:   snakemake -s workflow/Snakefile -n -p
+"""
+
+import pandas as pd
+
+configfile: "config/config.yaml"
+
+samples_df = pd.read_csv(config["samples"], sep="\t")
+SAMPLES = samples_df["sample"].unique().tolist()
+LANES = {
+    s: samples_df[samples_df["sample"] == s]["lane"].tolist() for s in SAMPLES
+}
+
+RAW = config["raw_dir"]
+RES = config["results_dir"]
+LOG = config["log_dir"]
+REF = config["reference"]["fasta"]
+
+
+def lane_bams(wildcards):
+    return [f"{RES}/align/{wildcards.sample}_{lane}.sorted.bam" for lane in LANES[wildcards.sample]]
+
+
+rule all:
+    input:
+        f"{RES}/qc/multiqc_report.html",
+        expand(f"{RES}/variants/{{sample}}.filtered.vcf.gz", sample=SAMPLES),
+        expand(f"{RES}/summary/{{sample}}.variant_summary.txt", sample=SAMPLES),
+        f"{RES}/summary/pipeline_summary.tsv",
+
+
+# ------------------------------------------------------------------
+# 1. Per-lane read trimming and QC
+# ------------------------------------------------------------------
+rule fastp:
+    input:
+        r1=f"{RAW}/{{sample}}_{{lane}}_R1.fastq.gz",
+        r2=f"{RAW}/{{sample}}_{{lane}}_R2.fastq.gz",
+    output:
+        r1=f"{RES}/trimmed/{{sample}}_{{lane}}_R1.trimmed.fastq.gz",
+        r2=f"{RES}/trimmed/{{sample}}_{{lane}}_R2.trimmed.fastq.gz",
+        html=f"{RES}/qc/fastp/{{sample}}_{{lane}}.fastp.html",
+        json=f"{RES}/qc/fastp/{{sample}}_{{lane}}.fastp.json",
+    log:
+        f"{LOG}/fastp/{{sample}}_{{lane}}.log",
+    shell:
+        """
+        mkdir -p {RES}/trimmed {RES}/qc/fastp logs/fastp
+        fastp -i {input.r1} -I {input.r2} -o {output.r1} -O {output.r2} \
+            --html {output.html} --json {output.json} > {log} 2>&1
+        """
+
+
+# ------------------------------------------------------------------
+# 2. Align each lane separately, tagging its own read group
+#    (this matters: BQSR and duplicate marking need per-lane RGs to
+#    correctly account for lane-specific batch effects)
+# ------------------------------------------------------------------
+rule align_lane:
+    input:
+        r1=f"{RES}/trimmed/{{sample}}_{{lane}}_R1.trimmed.fastq.gz",
+        r2=f"{RES}/trimmed/{{sample}}_{{lane}}_R2.trimmed.fastq.gz",
+        ref=REF,
+    output:
+        bam=f"{RES}/align/{{sample}}_{{lane}}.sorted.bam",
+    params:
+        rg=lambda wc: (
+            f"@RG\\tID:{wc.sample}_{wc.lane}\\tSM:{wc.sample}\\t"
+            f"LB:{wc.sample}\\tPL:ILLUMINA\\tPU:{wc.lane}"
+        ),
+    log:
+        f"{LOG}/align/{{sample}}_{{lane}}.log",
+    threads: config["threads"]["bwa"]
+    shell:
+        """
+        mkdir -p {RES}/align logs/align
+        bwa mem -t {threads} -R '{params.rg}' {input.ref} {input.r1} {input.r2} 2> {log} \
+            | samtools sort -@ {threads} -o {output.bam} -
+        samtools index {output.bam}
+        """
+
+
+# ------------------------------------------------------------------
+# 3. Merge lane BAMs into one BAM per sample
+# ------------------------------------------------------------------
+rule merge_lanes:
+    input:
+        bams=lane_bams,
+    output:
+        bam=f"{RES}/align/{{sample}}.merged.bam",
+    log:
+        f"{LOG}/merge/{{sample}}.log",
+    threads: config["threads"]["bwa"]
+    shell:
+        """
+        mkdir -p {RES}/align logs/merge
+        samtools merge -@ {threads} -f {output.bam} {input.bams} > {log} 2>&1
+        samtools index {output.bam}
+        """
+
+
+# ------------------------------------------------------------------
+# 4. Mark duplicates
+# ------------------------------------------------------------------
+rule mark_duplicates:
+    input:
+        bam=f"{RES}/align/{{sample}}.merged.bam",
+    output:
+        bam=f"{RES}/align/{{sample}}.dedup.bam",
+        metrics=f"{RES}/qc/markdup/{{sample}}.markdup_metrics.txt",
+    log:
+        f"{LOG}/markdup/{{sample}}.log",
+    shell:
+        """
+        mkdir -p {RES}/qc/markdup logs/markdup
+        gatk MarkDuplicates -I {input.bam} -O {output.bam} \
+            -M {output.metrics} > {log} 2>&1
+        samtools index {output.bam}
+        """
+
+
+# ------------------------------------------------------------------
+# 5. Base quality score recalibration (BQSR)
+# ------------------------------------------------------------------
+rule base_recalibrator:
+    input:
+        bam=f"{RES}/align/{{sample}}.dedup.bam",
+        ref=REF,
+        known_indels=config["reference"]["known_indels"],
+        known_dbsnp=config["reference"]["known_dbsnp"],
+    output:
+        table=f"{RES}/align/{{sample}}.recal_data.table",
+    log:
+        f"{LOG}/bqsr/{{sample}}_recal.log",
+    shell:
+        """
+        mkdir -p logs/bqsr
+        gatk BaseRecalibrator -I {input.bam} -R {input.ref} \
+            --known-sites {input.known_indels} \
+            --known-sites {input.known_dbsnp} \
+            -O {output.table} > {log} 2>&1
+        """
+
+
+rule apply_bqsr:
+    input:
+        bam=f"{RES}/align/{{sample}}.dedup.bam",
+        ref=REF,
+        table=f"{RES}/align/{{sample}}.recal_data.table",
+    output:
+        bam=f"{RES}/align/{{sample}}.recal.bam",
+    log:
+        f"{LOG}/bqsr/{{sample}}_apply.log",
+    shell:
+        """
+        gatk ApplyBQSR -I {input.bam} -R {input.ref} \
+            --bqsr-recal-file {input.table} \
+            -O {output.bam} > {log} 2>&1
+        """
+
+
+rule flagstat:
+    input:
+        bam=f"{RES}/align/{{sample}}.recal.bam",
+    output:
+        f"{RES}/qc/flagstat/{{sample}}.flagstat.txt",
+    shell:
+        """
+        mkdir -p {RES}/qc/flagstat
+        samtools flagstat {input.bam} > {output}
+        """
+
+
+# ------------------------------------------------------------------
+# 6. Variant calling with HaplotypeCaller
+# ------------------------------------------------------------------
+rule haplotype_caller:
+    input:
+        bam=f"{RES}/align/{{sample}}.recal.bam",
+        ref=REF,
+    output:
+        vcf=f"{RES}/variants/{{sample}}.raw.vcf.gz",
+    log:
+        f"{LOG}/haplotypecaller/{{sample}}.log",
+    threads: config["threads"]["gatk"]
+    shell:
+        """
+        mkdir -p {RES}/variants logs/haplotypecaller
+        gatk HaplotypeCaller -I {input.bam} -R {input.ref} \
+            -O {output.vcf} --native-pair-hmm-threads {threads} > {log} 2>&1
+        """
+
+
+# ------------------------------------------------------------------
+# 7. Hard-filter SNPs and indels separately (GATK best-practices
+#    default thresholds), then merge back into one filtered VCF.
+#    VQSR is the production alternative but needs orders of magnitude
+#    more variants than this demo region has to train on.
+# ------------------------------------------------------------------
+rule select_snps:
+    input:
+        vcf=f"{RES}/variants/{{sample}}.raw.vcf.gz",
+        ref=REF,
+    output:
+        vcf=f"{RES}/variants/{{sample}}.snps.vcf.gz",
+    shell:
+        "gatk SelectVariants -R {input.ref} -V {input.vcf} --select-type-to-include SNP -O {output.vcf}"
+
+
+rule select_indels:
+    input:
+        vcf=f"{RES}/variants/{{sample}}.raw.vcf.gz",
+        ref=REF,
+    output:
+        vcf=f"{RES}/variants/{{sample}}.indels.vcf.gz",
+    shell:
+        "gatk SelectVariants -R {input.ref} -V {input.vcf} --select-type-to-include INDEL -O {output.vcf}"
+
+
+rule filter_snps:
+    input:
+        vcf=f"{RES}/variants/{{sample}}.snps.vcf.gz",
+        ref=REF,
+    output:
+        vcf=f"{RES}/variants/{{sample}}.snps.filtered.vcf.gz",
+    params:
+        qd=config["filters"]["snp_qd"],
+        fs=config["filters"]["snp_fs"],
+        mq=config["filters"]["snp_mq"],
+    shell:
+        """
+        gatk VariantFiltration -R {input.ref} -V {input.vcf} \
+            --filter-expression "QD < {params.qd}" --filter-name "QD_lt_{params.qd}" \
+            --filter-expression "FS > {params.fs}" --filter-name "FS_gt_{params.fs}" \
+            --filter-expression "MQ < {params.mq}" --filter-name "MQ_lt_{params.mq}" \
+            -O {output.vcf}
+        """
+
+
+rule filter_indels:
+    input:
+        vcf=f"{RES}/variants/{{sample}}.indels.vcf.gz",
+        ref=REF,
+    output:
+        vcf=f"{RES}/variants/{{sample}}.indels.filtered.vcf.gz",
+    params:
+        qd=config["filters"]["indel_qd"],
+        fs=config["filters"]["indel_fs"],
+    shell:
+        """
+        gatk VariantFiltration -R {input.ref} -V {input.vcf} \
+            --filter-expression "QD < {params.qd}" --filter-name "QD_lt_{params.qd}" \
+            --filter-expression "FS > {params.fs}" --filter-name "FS_gt_{params.fs}" \
+            -O {output.vcf}
+        """
+
+
+rule merge_filtered:
+    input:
+        snps=f"{RES}/variants/{{sample}}.snps.filtered.vcf.gz",
+        indels=f"{RES}/variants/{{sample}}.indels.filtered.vcf.gz",
+    output:
+        vcf=f"{RES}/variants/{{sample}}.filtered.vcf.gz",
+    log:
+        f"{LOG}/merge_vcf/{{sample}}.log",
+    shell:
+        """
+        mkdir -p logs/merge_vcf
+        gatk MergeVcfs -I {input.snps} -I {input.indels} -O {output.vcf} > {log} 2>&1
+        """
+
+
+# ------------------------------------------------------------------
+# 8. Variant summary stats
+# ------------------------------------------------------------------
+rule variant_summary:
+    input:
+        vcf=f"{RES}/variants/{{sample}}.filtered.vcf.gz",
+    output:
+        f"{RES}/summary/{{sample}}.variant_summary.txt",
+    shell:
+        """
+        mkdir -p {RES}/summary
+        bcftools stats {input.vcf} > {output}
+        """
+
+
+rule pipeline_summary:
+    input:
+        vcfs=expand(f"{RES}/variants/{{sample}}.filtered.vcf.gz", sample=SAMPLES),
+        flagstats=expand(f"{RES}/qc/flagstat/{{sample}}.flagstat.txt", sample=SAMPLES),
+    output:
+        f"{RES}/summary/pipeline_summary.tsv",
+    log:
+        f"{LOG}/pipeline_summary.log",
+    shell:
+        """
+        mkdir -p {RES}/summary logs
+        python workflow/scripts/summarize_variants.py \
+            --vcfs {input.vcfs} --flagstats {input.flagstats} \
+            --output {output} > {log} 2>&1
+        """
+
+
+# ------------------------------------------------------------------
+# 9. MultiQC
+# ------------------------------------------------------------------
+rule multiqc:
+    input:
+        fastp=expand(f"{RES}/qc/fastp/{{sample}}_{{lane}}.fastp.json",
+                      zip,
+                      sample=samples_df["sample"], lane=samples_df["lane"]),
+        flagstat=expand(f"{RES}/qc/flagstat/{{sample}}.flagstat.txt", sample=SAMPLES),
+        markdup=expand(f"{RES}/qc/markdup/{{sample}}.markdup_metrics.txt", sample=SAMPLES),
+        bcftools=expand(f"{RES}/summary/{{sample}}.variant_summary.txt", sample=SAMPLES),
+    output:
+        f"{RES}/qc/multiqc_report.html",
+    log:
+        f"{LOG}/multiqc.log",
+    shell:
+        """
+        multiqc {RES} logs -o {RES}/qc -n multiqc_report --force > {log} 2>&1
+        """

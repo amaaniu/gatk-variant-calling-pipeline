@@ -1,0 +1,37 @@
+# Raw data — public and easy to re-fetch, see README "Getting the data"
+data/raw/*.fastq.gz
+!data/raw/.gitkeep
+
+# Reference files — large, public, fetched via nf-core/test-datasets
+data/reference/*.fasta*
+data/reference/*.dict
+data/reference/*.vcf.gz*
+!data/reference/.gitkeep
+
+# Regenerable pipeline intermediates
+results/align/*.bam
+results/align/*.bam.bai
+results/align/*.recal_data.table
+results/trimmed/
+results/variants/*.snps.vcf.gz*
+results/variants/*.indels.vcf.gz*
+results/variants/*.raw.vcf.gz*
+results/qc/multiqc_report_data/
+
+# Snakemake / logs
+.snakemake/
+logs/*.log
+logs/**/*.log
+
+# Flask app runtime data
+app/uploads/*
+app/results/*
+!app/uploads/.gitkeep
+!app/results/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
